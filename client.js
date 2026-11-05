@@ -42,6 +42,8 @@ window.__ModuleLoader__.load({
       'note.doneBtn': '标记完成',
       'note.undoneBtn': '恢复未完成',
       'note.doneAt': '完成于',
+      'note.pinBtn': '置顶',
+      'note.unpinBtn': '取消置顶',
       'section.done': '已完成',
       'count': '{count} 张便签'
     };
@@ -75,6 +77,8 @@ window.__ModuleLoader__.load({
       'note.doneBtn': 'Mark done',
       'note.undoneBtn': 'Reopen',
       'note.doneAt': 'Done',
+      'note.pinBtn': 'Pin to top',
+      'note.unpinBtn': 'Unpin',
       'section.done': 'Done',
       'count': '{count} note(s)'
     };
@@ -95,12 +99,25 @@ window.__ModuleLoader__.load({
     function loadNotes() {
       try {
         const raw = window.localStorage.getItem(STORAGE_KEY);
-        if (!raw) return [];
-        const data = JSON.parse(raw);
-        if (!Array.isArray(data)) return [];
-        return data
+        let data = [];
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) data = parsed;
+        }
+        const notes = data
           .filter((n) => n && typeof n.id === 'string' && KINDS.includes(n.kind) && typeof n.text === 'string')
-          .map((n) => (n.done === true ? { ...n, done: true, doneAt: typeof n.doneAt === 'number' ? n.doneAt : n.updatedAt } : { ...n, done: false }));
+          .map((n) => {
+            // Completion and pinning are independent flags, never deletions:
+            // the note keeps its id, text and timestamps so both can be undone.
+            const pinned = n.pinned === true;
+            const base = pinned
+              ? { ...n, pinned: true, pinnedAt: typeof n.pinnedAt === 'number' ? n.pinnedAt : (n.updatedAt ?? n.createdAt ?? 0) }
+              : { ...n, pinned: false };
+            return base.done === true
+              ? { ...base, done: true, doneAt: typeof base.doneAt === 'number' ? base.doneAt : base.updatedAt }
+              : { ...base, done: false };
+          });
+        return notes;
       } catch {
         return [];
       }
@@ -157,6 +174,9 @@ window.__ModuleLoader__.load({
 .sn-card[data-done="true"] .sn-cardText{text-decoration:line-through;text-decoration-thickness:1px;
   text-decoration-color:rgba(51,70,58,.45);color:#3d5044}
 .sn-card[data-done="true"] .sn-cardKind{font-weight:600}
+.sn-card[data-pinned="true"]{box-shadow:0 2px 10px rgba(0,0,0,.16)}
+.sn-card[data-pinned="true"]::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;border-radius:10px 0 0 10px;
+  background:var(--dsw-alias-brand-primary,currentColor);opacity:.7}
 .sn-sectionHead{max-width:1120px;width:100%;margin:8px auto 0;display:flex;align-items:center;gap:8px}
 .sn-sectionTitle{margin:0;font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary);
   display:flex;align-items:center;gap:6px}
@@ -242,6 +262,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState(note.text);
       const [confirming, setConfirming] = React.useState(false);
       const isDone = note.done === true;
+      const isPinned = note.pinned === true;
       const colors = isDone ? DONE_COLORS : (KIND_COLORS[note.kind] ?? KIND_COLORS.memo);
       const startEdit = () => { setDraft(note.text); setEditing(true); };
       const save = () => {
@@ -253,15 +274,18 @@ window.__ModuleLoader__.load({
       // Completion is a flag, never a delete: the note keeps its id, text and
       // creation time, so it can always be reopened.
       const toggleDone = () => onUpdate(note.id, { done: !isDone, doneAt: !isDone ? Date.now() : null });
+      // Pinning only reorders the wall; the note is untouched otherwise.
+      const togglePin = () => onUpdate(note.id, { pinned: !isPinned, pinnedAt: !isPinned ? Date.now() : null });
       return h('div', {
         className: 'sn-card', tabIndex: 0,
         style: { background: colors.bg, borderColor: colors.edge },
         'data-kind': note.kind,
         'data-done': isDone ? 'true' : 'false',
+        'data-pinned': isPinned ? 'true' : 'false',
         title: isDone ? t('note.undoneBtn') : undefined
       },
         h('span', { className: 'sn-cardKind', style: { background: colors.edge, color: colors.ink } },
-          isDone ? '✓ ' + t('kind.' + note.kind) : t('kind.' + note.kind)),
+          (isPinned ? '📌 ' : '') + (isDone ? '✓ ' : '') + t('kind.' + note.kind)),
         editing
           ? h(React.Fragment, null,
               h('textarea', {
@@ -293,7 +317,14 @@ window.__ModuleLoader__.load({
                   : h('div', { className: 'sn-cardActions' },
                       h('button', {
                         type: 'button', className: 'sn-iconBtn',
-                        onClick: toggleDone,
+                        onClick: togglePin, 'data-action': 'pin',
+                        title: isPinned ? t('note.unpinBtn') : t('note.pinBtn'),
+                        'aria-label': isPinned ? t('note.unpinBtn') : t('note.pinBtn'),
+                        'aria-pressed': isPinned ? 'true' : 'false'
+                      }, '📌'),
+                      h('button', {
+                        type: 'button', className: 'sn-iconBtn',
+                        onClick: toggleDone, 'data-action': 'done',
                         title: isDone ? t('note.undoneBtn') : t('note.doneBtn'),
                         'aria-label': isDone ? t('note.undoneBtn') : t('note.doneBtn'),
                         'aria-pressed': isDone ? 'true' : 'false'
@@ -314,7 +345,7 @@ window.__ModuleLoader__.load({
 
       const add = ({ kind, text }) => {
         const now = Date.now();
-        setNotes((prev) => [{ id: newId(), kind, text, createdAt: now, updatedAt: now }, ...prev]);
+        setNotes((prev) => [{ id: newId(), kind, text, createdAt: now, updatedAt: now, done: false, pinned: false }, ...prev]);
       };
       const update = (id, patch) => {
         setNotes((prev) => prev.map((n) => n.id === id ? { ...n, ...patch, updatedAt: Date.now() } : n));
@@ -324,12 +355,22 @@ window.__ModuleLoader__.load({
       const query = search.trim().toLowerCase();
       const matchesQuery = (n) => !query || n.text.toLowerCase().includes(query);
       const inScope = notes.filter((n) => (filter === 'all' || filter === 'done' || n.kind === filter) && matchesQuery(n));
+      // Pinned notes float to the front of whatever list they belong to; among
+      // themselves the most recently pinned wins, then creation order (the
+      // array is already newest-first, so a stable sort keeps it).
+      const pinRank = (a, b) => {
+        const pa = a.pinned === true ? 1 : 0;
+        const pb = b.pinned === true ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        if (pa === 1) return (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
+        return 0;
+      };
       // Completed TODOs leave the main wall but stay on screen: they get their
       // own section at the bottom, newest completion first.
-      const active = filter === 'done' ? [] : inScope.filter((n) => n.done !== true);
+      const active = (filter === 'done' ? [] : inScope.filter((n) => n.done !== true)).slice().sort(pinRank);
       const done = inScope.filter((n) => n.done === true)
         .slice()
-        .sort((a, b) => (b.doneAt ?? b.updatedAt ?? 0) - (a.doneAt ?? a.updatedAt ?? 0));
+        .sort((a, b) => pinRank(a, b) || ((b.doneAt ?? b.updatedAt ?? 0) - (a.doneAt ?? a.updatedAt ?? 0)));
       const visibleCount = active.length + done.length;
       const doneSection = done.length > 0
         ? [

@@ -165,7 +165,7 @@ const activeCards = (tree) => noteCards(tree).filter((n) => n.props['data-done']
 const textOf = (card) => byClass(card, 'sn-cardText').map((n) => n.children.join('')).join('');
 const findByText = (tree, needle) => noteCards(tree).find((c) => textOf(c).includes(needle));
 const doneToggle = (card) => {
-  const btn = findAll(card, (n) => n.props.className === 'sn-iconBtn' && n.props['aria-pressed'] !== undefined)[0];
+  const btn = findAll(card, (n) => n.props['data-action'] === 'done')[0];
   assert.ok(btn, '卡片上找不到完成切换按钮');
   return btn;
 };
@@ -279,4 +279,72 @@ tree = render();
 assert.equal(doneCards(tree).length, 1, '灵感卡片也应可标记完成');
 assert.equal(doneCards(tree)[0].props.style.background, '#e3e8e4', '完成后统一使用已完成配色');
 
-console.log('全部用例通过 ✓  (12 组断言)');
+/* ==================================================================== */
+/* 置顶：永远排在前面、按置顶时间倒序、可取消、跨刷新保持                */
+/* ==================================================================== */
+
+const pinToggle = (card) => {
+  const btn = findAll(card, (n) => n.props['data-action'] === 'pin')[0];
+  assert.ok(btn, '卡片上找不到置顶按钮');
+  return btn;
+};
+const setSearch = (tree, value) => {
+  const input = findAll(tree, (n) => n.props.className === 'sn-search')[0];
+  assert.ok(input, '找不到搜索框');
+  input.props.onChange({ target: { value } });
+};
+const activeOrder = (tree) => activeCards(tree).map(textOf);
+
+// 15. 置顶便签排到最前（其余保持原有顺序）
+store.clear();
+localStorage.setItem(STORAGE_KEY, JSON.stringify([
+  { id: 'a', kind: 'todo', text: 'A 第一条', done: false, createdAt: 1, updatedAt: 1 },
+  { id: 'b', kind: 'todo', text: 'B 第二条', done: false, createdAt: 2, updatedAt: 2 },
+  { id: 'c', kind: 'todo', text: 'C 第三条', done: false, createdAt: 3, updatedAt: 3 }
+]));
+tree = remount();
+assert.deepEqual(activeOrder(tree), ['A 第一条', 'B 第二条', 'C 第三条'], '初始顺序应与存储顺序一致');
+pinToggle(findByText(tree, 'C 第三条')).props.onClick();
+tree = render();
+assert.deepEqual(activeOrder(tree), ['C 第三条', 'A 第一条', 'B 第二条'], '置顶项应排到最前');
+assert.equal(findByText(tree, 'C 第三条').props['data-pinned'], 'true', '置顶卡片应带 data-pinned');
+assert.ok(byClass(findByText(tree, 'C 第三条'), 'sn-cardKind')[0].children.join('').includes('📌'),
+  '置顶卡片徽标应带 📌');
+
+// 16. 多个置顶项按置顶时间倒序（后置顶的在前）
+tree = render();
+pinToggle(findByText(tree, 'A 第一条')).props.onClick();
+tree = render();
+assert.deepEqual(activeOrder(tree), ['A 第一条', 'C 第三条', 'B 第二条'], '后置顶的应排在前面');
+
+// 17. 置顶状态跨重新挂载保持
+tree = render();
+tree = remount();
+assert.deepEqual(activeOrder(tree), ['A 第一条', 'C 第三条', 'B 第二条'], '置顶状态应从 localStorage 恢复');
+
+// 18. 取消置顶后回到未置顶区，且不影响其它置顶项
+pinToggle(findByText(tree, 'A 第一条')).props.onClick();
+tree = render();
+assert.deepEqual(activeOrder(tree), ['C 第三条', 'A 第一条', 'B 第二条'], '取消置顶后应退回未置顶组');
+
+// 19. 搜索/筛选下置顶仍然优先（同一毫秒内置顶时按原顺序稳定排列）
+pinToggle(findByText(tree, 'B 第二条')).props.onClick();
+tree = render();
+assert.deepEqual(activeOrder(tree), ['B 第二条', 'C 第三条', 'A 第一条'], '两条置顶都应在未置顶项之前');
+setSearch(tree, '第');
+tree = render();
+assert.deepEqual(activeOrder(tree), ['B 第二条', 'C 第三条', 'A 第一条'], '搜索过滤后置顶依旧优先');
+
+// 20. 已完成分区内同样置顶优先
+store.clear();
+localStorage.setItem(STORAGE_KEY, JSON.stringify([
+  { id: 'd1', kind: 'todo', text: '完成一', done: true, doneAt: 100, createdAt: 1, updatedAt: 1 },
+  { id: 'd2', kind: 'todo', text: '完成二', done: true, doneAt: 200, createdAt: 2, updatedAt: 2 }
+]));
+tree = remount();
+assert.deepEqual(doneCards(tree).map(textOf), ['完成二', '完成一'], '已完成区默认按完成时间倒序');
+pinToggle(doneCards(tree)[1]).props.onClick();
+tree = render();
+assert.deepEqual(doneCards(tree).map(textOf), ['完成一', '完成二'], '已完成区里置顶项也应排到最前');
+
+console.log('全部用例通过 ✓  (20 组断言)');
